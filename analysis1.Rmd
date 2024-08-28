@@ -109,7 +109,7 @@ for(i in 1:Ntimes){
   
   #day of week effects
   for(k in 1:6){
-    delta[k]~dnorm(0,1)
+    delta[k]~dnorm(0,1e-4)
   }
   
   
@@ -219,27 +219,6 @@ ggplot(ar1_summary, aes(x=i, y=.value)) +
   geom_ribbon(aes(x=i, ymin=.lower, ymax=.upper), alpha=0.2)+
   theme_minimal()
 
-```
-
-
-
-#base R extraction
-```{r}
-posterior_samples.all<-do.call(rbind,posterior_samples) #combine 3 chains into 1 data frame
-
-post_means<-apply(posterior_samples.all, 2, mean)
-sample.labs<-names(post_means)
-ci<-t(hdi(posterior_samples.all, credMass = 0.95))
-#ci<-matrix(sprintf("%.1f",round(ci,1)), ncol=2)
-ci<-matrix(ci, ncol=2)
-
-row.names(ci)<-sample.labs
-#post_means<-sprintf("%.1f",round(post_means,1))
-names(post_means)<-sample.labs
-
-post_all <- cbind.data.frame(post_means,ci) 
-names(post_all) <- c('pred','pred_lcl','pred_ucl')
-post_all$param <- row.names(post_all)
 ```
 
 
