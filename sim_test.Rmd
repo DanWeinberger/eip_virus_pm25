@@ -22,15 +22,28 @@ library(tidybayes)
 
 ```
 
-read in data
+simulate some data
 
 ```{r}
-ds1 <- read.csv('./Data/CONFIDENTIAL/CovidNet_AQ_Weather_08292024.csv') %>%
-  rename(pm2_5=PM2.5_Avg, humid=site_avg_RelH) %>%
- mutate( date =as.Date(date,'%m/%d/%Y'),
-    day_of_week=as.factor(weekdays(date)),
-    
-    pm2_5=scale(pm2_5),
+set.seed(123)
+dates <- seq.Date(from=as.Date('2022-01-01'), by='day', length.out=578)
+
+ pm2_5 <- rnorm(n=length(dates),0,1)
+ humidity <- rnorm(n=length(dates),0,1)
+ 
+ rho=0.8
+ ar1 <- NA
+ ar1[1] <- rnorm(1,0,sd=0.2)
+ 
+ for(i in 2:length(dates)){
+   ar1[i] <- ar1[i-1]*rho +  rnorm(1,0,sd=0.2)
+ }
+ 
+ beta_dow <- c(-0.9,1,0.5, 0.4, 0.3, 0.3) #dow effect
+
+ 
+ ds1 <- cbind.data.frame(dates, pm2_5, humidity,ar1) %>%
+   mutate(day_of_week=as.factor(weekdays(dates)),
           pm2_5_lag0=pm2_5,
           pm2_5_lag1 =lag(pm2_5,1),
           pm2_5_lag2 =lag(pm2_5,2),
@@ -46,36 +59,28 @@ ds1 <- read.csv('./Data/CONFIDENTIAL/CovidNet_AQ_Weather_08292024.csv') %>%
           pm2_5_lag12 =lag(pm2_5,12),
           pm2_5_lag13 =lag(pm2_5,13),
           pm2_5_lag14 =lag(pm2_5,14),
-    
-    humid=scale(humid),
-            humid_lag0 =humid,
-            humid_lag1=lag(humid,1),
-            humid_lag2=lag(humid,2),
-            humid_lag3=lag(humid,3),
-            humid_lag4=lag(humid,4),
-            humid_lag5=lag(humid,5),
-            humid_lag6=lag(humid,6),
-            humid_lag7=lag(humid,7),
-            humid_lag8=lag(humid,8),
-            humid_lag9=lag(humid,9),
-            humid_lag10=lag(humid,10)
           ) %>%
-  filter(!is.na(Cases_Total) & !is.na(humid))
+   filter(!is.na(pm2_5_lag14))
+ 
+ coef_pm2_5 <- c(0.01,0.02,0.02,0.01, 0.04, 0.08, 0.1, 0.2, 0.1,0.05,0.02,0.01,0.01, 0,0)
+ coef_pm2_5 <- coef_pm2_5/sum(coef_pm2_5) #weight to 1
 
  pm2_5_mat <- ds1 %>%
    select(starts_with('pm2_5_lag')) %>%
    as.matrix()
  
-  humid_mat <- ds1 %>%
-   select(starts_with('humid_lag')) %>%
-   as.matrix()
- 
- 
  dow_mat <- model.matrix(~day_of_week, data=ds1) 
  dow_mat <- dow_mat[,-1] #remove intercept
  
+ ds1$dow_part <- dow_mat %*% beta_dow
+ 
+ ds1$pm2_5_part <- pm2_5_mat %*% coef_pm2_5
+ 
+ ds1$lambda1 <- exp(2 + ds1$ar1 + ds1$dow_part + 0.5*ds1$pm2_5_part [,1])
+ ds1$cases <- rpois(nrow(ds1), lambda=ds1$lambda1)
+ 
+ 
 ```
-
 
 
 
@@ -91,8 +96,7 @@ for(i in 1:Ntimes){
   prob[i]<- r/(r+lambda[i])  ## likelihood 
 
   log(lambda[i]) <-   alpha[i] +inprod(delta[],dow_mat[i,]) +
-                    inprod(epsilon[],pm2_5_mat[i,]) +
-                    inprod(eta[],   humid_mat[i,])
+                    inprod(epsilon[],pm2_5_mat[i,])
   
 
 }
@@ -100,7 +104,7 @@ for(i in 1:Ntimes){
 #AR1 random intercept
   alpha[1] ~ dnorm(mu0  , (1 - rho1^2) * tau.alpha1) # Prior for the first time point
   for(i in 2:Ntimes){
-    alpha[i] ~ dnorm( mu0  + rho1 * (alpha[i-1]-mu0), tau.alpha1)
+    alpha[i] ~ dnorm( mu0  + rho1 * alpha[i-1], tau.alpha1)
   }
   
   #day of week effects
@@ -114,19 +118,12 @@ for(i in 1:Ntimes){
     epsilon[m] ~ dnorm(rho2 *epsilon[m-1] , tau.epsilon2)
   }
   
-  eta[1] ~ dnorm(0, (1 - rho3^2) * tau.eta2)
-  for(m in 2:11){
-    eta[m] ~ dnorm(rho3 *eta[m-1] , tau.eta2)
-  }
-  
 
   tau.alpha1 ~ dgamma(3, 2)  # Tight prior for tau 
   tau.epsilon2 ~ dgamma(3, 2)  # Tight prior for tau 
-  tau.eta2 ~ dgamma(3, 2)  # Tight prior for tau 
 
   rho1 ~ dunif(-1, 1)       # Uniform prior for rho
   rho2 ~ dunif(-1, 1)       # Uniform prior for rho
-  rho3 ~ dunif(-1, 1)       # Uniform prior for rho
 
   mu0 ~ dnorm(0, 1e-4)   # Uninformative prior for intercept
   
@@ -151,10 +148,10 @@ model_spec<-textConnection(model_string)
 model_jags<-jags.model(model_spec,
                        inits=list(inits1,inits2, inits3),
                        data=list('Ntimes'= nrow(ds1)  ,
-                                 'cases'= ds1$Cases_Total,
+                                 'cases'= ds1$cases,
                                  'pm2_5_mat'=pm2_5_mat,
-                                 'dow_mat'=dow_mat,
-                                 'humid_mat'=humid_mat
+                                 'dow_mat'=dow_mat
+                                 
                        ),
                        n.adapt=5000,
                        n.chains=3, quiet=F)
@@ -164,7 +161,7 @@ model_jags<-jags.model(model_spec,
 
 what parameters do you want to sample?
 ```{r}
-params<-c('rho1', 'mu0','alpha','tau.alpha1','lambda', 'epsilon','eta')
+params<-c('rho1', 'mu0','alpha','tau.alpha1','lambda', 'epsilon')
 
 ```
 
@@ -207,18 +204,8 @@ ggplot(dl_summary, aes(x=m, y=.value)) +
   geom_ribbon(aes(x=m, ymin=.lower, ymax=.upper), alpha=0.2)+
   theme_minimal()
 
-```
-
-distributed lag eta (humidity)
-```{r}
-dl_summary <- gather_draws(posterior_samples, eta[m]) %>%
-  median_hdi()
-
-ggplot(dl_summary, aes(x=m, y=.value)) +
-  geom_line()+
-  geom_ribbon(aes(x=m, ymin=.lower, ymax=.upper), alpha=0.2)+
-  theme_minimal()
-
+#estimated vs true
+plot(dl_summary$.value, coef_pm2_5 )
 ```
 
 
@@ -246,7 +233,7 @@ cases[i] ~ dnegbin(prob[i],r)
 prob[i]<- r/(r+mu[i])  ## likelihood 
 
 log(upsilon[i]) <- beta0 +  inprod(delta[],dow_mat[i,]) #endemic component
-log(lambda[i]) <- delta0 +  inprod(epsilon[],pm2_5_mat[i,]) +  inprod(eta[],humid_mat[i,]) #epidemic component
+log(lambda[i]) <- delta0 +  inprod(epsilon[],pm2_5_mat[i,]) #epiemic component
 
 }
 
@@ -269,17 +256,9 @@ for(i in 2:Ntimes){
     epsilon[m] ~ dnorm(rho2 *epsilon[m-1] , tau.epsilon2)
   }
   
-  #prior for humidity effect
-    eta[1] ~ dnorm(0, (1 - rho3^2) * tau.eta2)
-  for(m in 2:11){
-    eta[m] ~ dnorm(rho3 *eta[m-1] , tau.eta2)
-  }
-  
   tau.epsilon2 ~ dgamma(3, 2)  # Tight prior for tau 
-  tau.eta2 ~ dgamma(3,2)
-  
+
   rho2 ~ dunif(-1, 1)       # Uniform prior for rho
-  rho3 ~ dunif(-1, 1)       # Uniform prior for rho
 
   beta0 ~ dnorm(0, 1e-4)   # Uninformative prior for intercept
   delta0 ~ dnorm(0, 1e-4)   # Uninformative prior for intercept
@@ -295,10 +274,9 @@ model_spec_hhh4<-textConnection(model_string_hhh4)
 model_jags_hhh4<-jags.model(model_spec_hhh4,
                        inits=list(inits1,inits2, inits3),
                        data=list('Ntimes'= nrow(ds1)  ,
-                                 'cases'= ds1$Cases_Total,
+                                 'cases'= ds1$cases,
                                  'pm2_5_mat'=pm2_5_mat,
                                  'dow_mat'=dow_mat,
-                                 'humid_mat'=humid_mat,
                                  'offset'= rep(1, times=nrow(ds1))
                                  
                        ),
@@ -307,7 +285,7 @@ model_jags_hhh4<-jags.model(model_spec_hhh4,
 ```
 
 ```{r}
-params<-c('rho2', 'beta0','delta0','lambda','upsilon', 'mu','delta','eta')
+params<-c('rho2', 'beta0','delta0','lambda','upsilon', 'mu','delta')
 
 ```
 
@@ -338,28 +316,4 @@ ggplot( aes(x=.iteration, y=.value, group=.chain, color=.chain), alpha=0.2) +
   geom_line()+
   theme_classic()
 
-```
-
-pm2.5
-```{r}
-dl_summary <- gather_draws(posterior_samples, epsilon[m]) %>%
-  median_hdi()
-
-ggplot(dl_summary, aes(x=m, y=.value)) +
-  geom_line()+
-  geom_ribbon(aes(x=m, ymin=.lower, ymax=.upper), alpha=0.2)+
-  theme_minimal()
-
-```
-
-humidity
-```{r}
-dl_summary <- gather_draws(posterior_samples, eta[m]) %>%
-  median_hdi()
-
-ggplot(dl_summary, aes(x=m, y=.value)) +
-  geom_line()+
-  geom_ribbon(aes(x=m, ymin=.lower, ymax=.upper), alpha=0.2)+
-  theme_minimal()
-
-```
+````
