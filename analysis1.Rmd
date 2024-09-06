@@ -58,7 +58,11 @@ ds1 <- read.csv('./Data/CONFIDENTIAL/CovidNet_AQ_Weather_08292024.csv') %>%
             humid_lag7=lag(humid,7),
             humid_lag8=lag(humid,8),
             humid_lag9=lag(humid,9),
-            humid_lag10=lag(humid,10)
+            humid_lag10=lag(humid,10),
+            humid_lag11=lag(humid,11),
+            humid_lag12=lag(humid,12),
+            humid_lag13=lag(humid,13),
+            humid_lag14=lag(humid,14)
           ) %>%
   filter(!is.na(Cases_Total) & !is.na(humid))
 
@@ -115,7 +119,7 @@ for(i in 1:Ntimes){
   }
   
   eta[1] ~ dnorm(0, (1 - rho3^2) * tau.eta2)
-  for(m in 2:11){
+  for(m in 2:15){
     eta[m] ~ dnorm(rho3 *eta[m-1] , tau.eta2)
   }
   
@@ -187,6 +191,32 @@ ggplot( aes(x=.iteration, y=.value, group=.chain, color=.chain), alpha=0.2) +
 
 ```
 
+```{r}
+test <- gather_draws(posterior_samples, epsilon[i])
+
+test %>%
+  filter(i==1) %>%
+  mutate(.chain=as.factor(.chain)) %>%
+ggplot( aes(x=.iteration, y=.value, group=.chain, color=.chain), alpha=0.2) +
+  geom_line()+
+  theme_classic()
+
+
+```
+
+```{r}
+test <- gather_draws(posterior_samples, eta[i])
+
+test %>%
+  filter(i==1) %>%
+  mutate(.chain=as.factor(.chain)) %>%
+ggplot( aes(x=.iteration, y=.value, group=.chain, color=.chain), alpha=0.2) +
+  geom_line()+
+  theme_classic()
+
+
+```
+
 HDI for lambda
 ```{r}
 lambda_quant <- test %>%
@@ -205,7 +235,8 @@ dl_summary <- gather_draws(posterior_samples, epsilon[m]) %>%
 ggplot(dl_summary, aes(x=m, y=.value)) +
   geom_line()+
   geom_ribbon(aes(x=m, ymin=.lower, ymax=.upper), alpha=0.2)+
-  theme_minimal()
+  theme_minimal()+
+  geom_hline(yintercept=0, lty=2)
 
 ```
 
@@ -217,7 +248,8 @@ dl_summary <- gather_draws(posterior_samples, eta[m]) %>%
 ggplot(dl_summary, aes(x=m, y=.value)) +
   geom_line()+
   geom_ribbon(aes(x=m, ymin=.lower, ymax=.upper), alpha=0.2)+
-  theme_minimal()
+  theme_classic()+
+  geom_hline(yintercept=0, lty=2)
 
 ```
 
@@ -307,7 +339,7 @@ model_jags_hhh4<-jags.model(model_spec_hhh4,
 ```
 
 ```{r}
-params<-c('rho2', 'beta0','delta0','lambda','upsilon', 'mu','delta','eta')
+params<-c('rho2', 'beta0','delta0','lambda','upsilon', 'epsilon','mu','delta','eta')
 
 ```
 
@@ -342,24 +374,31 @@ ggplot( aes(x=.iteration, y=.value, group=.chain, color=.chain), alpha=0.2) +
 
 pm2.5
 ```{r}
-dl_summary <- gather_draws(posterior_samples, epsilon[m]) %>%
+dl_summary <- gather_draws(posterior_samples_hhh4, epsilon[m]) %>%
   median_hdi()
 
 ggplot(dl_summary, aes(x=m, y=.value)) +
   geom_line()+
   geom_ribbon(aes(x=m, ymin=.lower, ymax=.upper), alpha=0.2)+
-  theme_minimal()
+  theme_minimal()+
+  geom_hline(yintercept=0, lty=2)
 
 ```
 
 humidity
 ```{r}
-dl_summary <- gather_draws(posterior_samples, eta[m]) %>%
+dl_summary <- gather_draws(posterior_samples_hhh4, eta[m]) %>%
   median_hdi()
 
 ggplot(dl_summary, aes(x=m, y=.value)) +
   geom_line()+
   geom_ribbon(aes(x=m, ymin=.lower, ymax=.upper), alpha=0.2)+
-  theme_minimal()
+  theme_minimal()+
+  geom_hline(yintercept=0, lty=2)
 
 ```
+
+```{r}
+
+```
+
