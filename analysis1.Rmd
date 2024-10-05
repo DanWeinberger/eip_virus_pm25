@@ -25,12 +25,16 @@ library(tidybayes)
 read in data
 
 ```{r}
+
+ds0 <- read.csv('./Data/CONFIDENTIAL/AddingFlu_RSV.csv') %>%
+  mutate(date =as.Date(date,'%m/%d/%Y'),)
+
 ds1 <- read.csv('./Data/CONFIDENTIAL/CovidNet_AQ_Weather_08292024.csv') %>%
   rename(pm2_5=PM2.5_Avg, humid=site_avg_RelH) %>%
  mutate( date =as.Date(date,'%m/%d/%Y'),
     day_of_week=as.factor(weekdays(date)),
     
-    pm2_5=scale(pm2_5),
+    pm2_5=scale(log(pm2_5)),
           pm2_5_lag0=pm2_5,
           pm2_5_lag1 =lag(pm2_5,1),
           pm2_5_lag2 =lag(pm2_5,2),
@@ -64,7 +68,8 @@ ds1 <- read.csv('./Data/CONFIDENTIAL/CovidNet_AQ_Weather_08292024.csv') %>%
             humid_lag13=lag(humid,13),
             humid_lag14=lag(humid,14)
           ) %>%
-  filter(!is.na(Cases_Total) & !is.na(humid))
+  filter(!is.na(Cases_Total) & !is.na(humid_lag0)) %>%
+  left_join(ds0, by='date')
 
  pm2_5_mat <- ds1 %>%
    select(starts_with('pm2_5_lag')) %>%
@@ -128,9 +133,9 @@ for(i in 1:Ntimes){
   tau.epsilon2 ~ dgamma(3, 2)  # Tight prior for tau 
   tau.eta2 ~ dgamma(3, 2)  # Tight prior for tau 
 
-  rho1 ~ dunif(-1, 1)       # Uniform prior for rho
-  rho2 ~ dunif(-1, 1)       # Uniform prior for rho
-  rho3 ~ dunif(-1, 1)       # Uniform prior for rho
+  rho1 ~ dunif(0, 1)       # Uniform prior for rho
+  rho2 ~ dunif(0, 1)       # Uniform prior for rho
+  rho3 ~ dunif(0, 1)       # Uniform prior for rho
 
   mu0 ~ dnorm(0, 1e-4)   # Uninformative prior for intercept
   
@@ -149,7 +154,7 @@ inits2=list(".RNG.seed"=c(456), ".RNG.name"='base::Wichmann-Hill')
 inits3=list(".RNG.seed"=c(789), ".RNG.name"='base::Wichmann-Hill')
 ```
 
-### Initialize the model
+### Initialize the model for COVID
 ```{r}
 model_spec<-textConnection(model_string)
 model_jags<-jags.model(model_spec,
@@ -160,7 +165,7 @@ model_jags<-jags.model(model_spec,
                                  'dow_mat'=dow_mat,
                                  'humid_mat'=humid_mat
                        ),
-                       n.adapt=5000,
+                       n.adapt=15000,
                        n.chains=3, quiet=F)
 ```
 
@@ -227,7 +232,8 @@ ggplot(lambda_quant, aes(x=i, y=.value)) +
   theme_minimal()
 ```
 
-distributed lag
+
+### distributed lag for COVID
 ```{r}
 dl_summary <- gather_draws(posterior_samples, epsilon[m]) %>%
   median_hdi()
@@ -238,6 +244,14 @@ ggplot(dl_summary, aes(x=m, y=.value)) +
   theme_minimal()+
   geom_hline(yintercept=0, lty=2)
 
+test <- gather_draws(posterior_samples, epsilon[i])
+
+test %>%
+  filter(i==1) %>%
+  mutate(.chain=as.factor(.chain)) %>%
+ggplot( aes(x=.iteration, y=.value, group=.chain, color=.chain), alpha=0.2) +
+  geom_line()+
+  theme_classic()
 ```
 
 distributed lag eta (humidity)
@@ -254,7 +268,7 @@ ggplot(dl_summary, aes(x=m, y=.value)) +
 ```
 
 
-#AR1 component
+### AR1 component
 ```{r}
 ar1_summary <- gather_draws(posterior_samples, alpha[i]) %>%
   median_hdi()
@@ -265,95 +279,43 @@ ggplot(ar1_summary, aes(x=i, y=.value)) +
   theme_minimal()
 
 ```
-## HHH4 type model
-this is incomplete, needs testing and thought.
+
+
+## Same model for Flu
+
+### Initialize the model for COVID
 ```{r}
-
-model_string_hhh4 <- "
-
-model{
-
-for(i in 1:Ntimes){
-cases[i] ~ dnegbin(prob[i],r)
-prob[i]<- r/(r+mu[i])  ## likelihood 
-
-log(upsilon[i]) <- beta0 +  inprod(delta[],dow_mat[i,]) #endemic component
-log(lambda[i]) <- delta0 +  inprod(epsilon[],pm2_5_mat[i,]) +  inprod(eta[],humid_mat[i,]) #epidemic component
-
-}
-
-   mu[1] <-   upsilon[1]*offset[1] 
-
-for(i in 2:Ntimes){
-
-   mu[i] <-   upsilon[i]*offset[i] + lambda[i]*cases[i-1]
-
-}
-
-  #day of week effects
-  for(k in 1:6){
-    delta[k]~dnorm(0,1e-4)
-  }
-  
-  #prior for pm2.5 effect
-  epsilon[1] ~ dnorm(0, (1 - rho2^2) * tau.epsilon2)
-  for(m in 2:15){
-    epsilon[m] ~ dnorm(rho2 *epsilon[m-1] , tau.epsilon2)
-  }
-  
-  #prior for humidity effect
-    eta[1] ~ dnorm(0, (1 - rho3^2) * tau.eta2)
-  for(m in 2:11){
-    eta[m] ~ dnorm(rho3 *eta[m-1] , tau.eta2)
-  }
-  
-  tau.epsilon2 ~ dgamma(3, 2)  # Tight prior for tau 
-  tau.eta2 ~ dgamma(3,2)
-  
-  rho2 ~ dunif(-1, 1)       # Uniform prior for rho
-  rho3 ~ dunif(-1, 1)       # Uniform prior for rho
-
-  beta0 ~ dnorm(0, 1e-4)   # Uninformative prior for intercept
-  delta0 ~ dnorm(0, 1e-4)   # Uninformative prior for intercept
-  
-  r ~ dunif(0,250)
-
-}
-"
-```
-
-```{r}
-model_spec_hhh4<-textConnection(model_string_hhh4)
-model_jags_hhh4<-jags.model(model_spec_hhh4,
+model_spec<-textConnection(model_string)
+model_jags_flu<-jags.model(model_spec,
                        inits=list(inits1,inits2, inits3),
                        data=list('Ntimes'= nrow(ds1)  ,
-                                 'cases'= ds1$Cases_Total,
+                                 'cases'= ds1$Flu_Total,
                                  'pm2_5_mat'=pm2_5_mat,
                                  'dow_mat'=dow_mat,
-                                 'humid_mat'=humid_mat,
-                                 'offset'= rep(1, times=nrow(ds1))
-                                 
+                                 'humid_mat'=humid_mat
                        ),
-                       n.adapt=2000,
+                       n.adapt=15000,
                        n.chains=3, quiet=F)
 ```
 
+### Posterior sampling
+
+what parameters do you want to sample?
 ```{r}
-params<-c('rho2', 'beta0','delta0','lambda','upsilon', 'epsilon','mu','delta','eta')
+params<-c('rho1', 'mu0','alpha','tau.alpha1','lambda', 'epsilon','eta')
 
 ```
 
 ```{r}
-posterior_samples_hhh4<-coda.samples(model_jags_hhh4, 
+posterior_samples_flu<-coda.samples(model_jags_flu, 
                                 params, 
-                                n.iter=2000)
+                                n.iter=10000)
 ```
-
-
+## examine lambda
 ```{r}
-test <- gather_draws(posterior_samples_hhh4, mu[i])
+test_flu <- gather_draws(posterior_samples_flu, lambda[i])
 
-test %>%
+test_flu %>%
   filter(i==1) %>%
   mutate(.chain=as.factor(.chain)) %>%
 ggplot( aes(x=.iteration, y=.value, group=.chain, color=.chain), alpha=0.2) +
@@ -361,44 +323,215 @@ ggplot( aes(x=.iteration, y=.value, group=.chain, color=.chain), alpha=0.2) +
   theme_classic()
 
 
-test <- gather_draws(posterior_samples_hhh4, upsilon[i])
+```
 
-test %>%
-    filter(i==1) %>%
+```{r}
+test_flu2 <- gather_draws(posterior_samples_flu, epsilon[i])
+
+test_flu2 %>%
+  filter(i==1) %>%
   mutate(.chain=as.factor(.chain)) %>%
 ggplot( aes(x=.iteration, y=.value, group=.chain, color=.chain), alpha=0.2) +
   geom_line()+
   theme_classic()
 
+
 ```
 
-pm2.5
 ```{r}
-dl_summary <- gather_draws(posterior_samples_hhh4, epsilon[m]) %>%
+test_flu3 <- gather_draws(posterior_samples_flu, eta[i])
+
+test_flu3 %>%
+  filter(i==1) %>%
+  mutate(.chain=as.factor(.chain)) %>%
+ggplot( aes(x=.iteration, y=.value, group=.chain, color=.chain), alpha=0.2) +
+  geom_line()+
+  theme_classic()
+
+
+```
+
+HDI for lambda
+```{r}
+lambda_quant <- test_flu3 %>%
   median_hdi()
 
-ggplot(dl_summary, aes(x=m, y=.value)) +
+ggplot(lambda_quant, aes(x=i, y=.value)) +
+  geom_line()+
+  theme_minimal()
+```
+
+
+### distributed lag for FLU
+```{r}
+dl_summary_flu <- gather_draws(posterior_samples_flu, epsilon[m]) %>%
+  median_hdi()
+
+ggplot(dl_summary_flu, aes(x=m, y=.value)) +
   geom_line()+
   geom_ribbon(aes(x=m, ymin=.lower, ymax=.upper), alpha=0.2)+
   theme_minimal()+
   geom_hline(yintercept=0, lty=2)
 
+test_flu <- gather_draws(posterior_samples_flu, epsilon[i])
+
+test_flu %>%
+  filter(i==1) %>%
+  mutate(.chain=as.factor(.chain)) %>%
+ggplot( aes(x=.iteration, y=.value, group=.chain, color=.chain), alpha=0.2) +
+  geom_line()+
+  theme_classic()
 ```
 
-humidity
+distributed lag eta (humidity)
 ```{r}
-dl_summary <- gather_draws(posterior_samples_hhh4, eta[m]) %>%
+dl_summary_flu <- gather_draws(posterior_samples_flu, eta[m]) %>%
   median_hdi()
 
-ggplot(dl_summary, aes(x=m, y=.value)) +
+ggplot(dl_summar_fluy, aes(x=m, y=.value)) +
+  geom_line()+
+  geom_ribbon(aes(x=m, ymin=.lower, ymax=.upper), alpha=0.2)+
+  theme_classic()+
+  geom_hline(yintercept=0, lty=2)
+
+```
+
+
+### AR1 component
+```{r}
+ar1_summary_flu <- gather_draws(posterior_samples_flu, alpha[i]) %>%
+  median_hdi()
+
+ggplot(ar1_summary_flu, aes(x=i, y=.value)) +
+  geom_line()+
+  geom_ribbon(aes(x=i, ymin=.lower, ymax=.upper), alpha=0.2)+
+  theme_minimal()
+
+```
+
+
+
+## Same model for RSV
+
+### Initialize the model for COVID
+```{r}
+model_spec<-textConnection(model_string)
+model_jags_RSV<-jags.model(model_spec,
+                           inits=list(inits1,inits2, inits3),
+                           data=list('Ntimes'= nrow(ds1)  ,
+                                     'cases'= ds1$RSV_Total,
+                                     'pm2_5_mat'=pm2_5_mat,
+                                     'dow_mat'=dow_mat,
+                                     'humid_mat'=humid_mat
+                           ),
+                           n.adapt=15000,
+                           n.chains=3, quiet=F)
+```
+
+### Posterior sampling
+
+what parameters do you want to sample?
+  ```{r}
+params<-c('rho1', 'mu0','alpha','tau.alpha1','lambda', 'epsilon','eta')
+
+```
+
+```{r}
+posterior_samples_RSV<-coda.samples(model_jags_RSV, 
+                                    params, 
+                                    n.iter=10000)
+```
+## examine lambda
+```{r}
+test_RSV <- gather_draws(posterior_samples_RSV, lambda[i])
+
+test_RSV %>%
+  filter(i==1) %>%
+  mutate(.chain=as.factor(.chain)) %>%
+  ggplot( aes(x=.iteration, y=.value, group=.chain, color=.chain), alpha=0.2) +
+  geom_line()+
+  theme_classic()
+
+
+```
+
+```{r}
+test_RSV2 <- gather_draws(posterior_samples_RSV, epsilon[i])
+
+test_RSV2 %>%
+  filter(i==1) %>%
+  mutate(.chain=as.factor(.chain)) %>%
+  ggplot( aes(x=.iteration, y=.value, group=.chain, color=.chain), alpha=0.2) +
+  geom_line()+
+  theme_classic()
+
+
+```
+
+```{r}
+test_RSV3 <- gather_draws(posterior_samples_RSV, eta[i])
+
+test_RSV3 %>%
+  filter(i==1) %>%
+  mutate(.chain=as.factor(.chain)) %>%
+  ggplot( aes(x=.iteration, y=.value, group=.chain, color=.chain), alpha=0.2) +
+  geom_line()+
+  theme_classic()
+
+
+```
+
+HDI for lambda
+```{r}
+lambda_quant <- test_RSV3 %>%
+  median_hdi()
+
+ggplot(lambda_quant, aes(x=i, y=.value)) +
+  geom_line()+
+  theme_minimal()
+```
+
+### distributed lag for RSV
+```{r}
+dl_summary_RSV <- gather_draws(posterior_samples_RSV, epsilon[m]) %>%
+  median_hdi()
+
+ggplot(dl_summary_RSV, aes(x=m, y=.value)) +
   geom_line()+
   geom_ribbon(aes(x=m, ymin=.lower, ymax=.upper), alpha=0.2)+
   theme_minimal()+
   geom_hline(yintercept=0, lty=2)
 
+test_RSV <- gather_draws(posterior_samples_RSV, epsilon[i])
+
+test_RSV %>%
+  filter(i==1) %>%
+  mutate(.chain=as.factor(.chain)) %>%
+ggplot( aes(x=.iteration, y=.value, group=.chain, color=.chain), alpha=0.2) +
+  geom_line()+
+  theme_classic()
 ```
 
+distributed lag eta (humidity)
 ```{r}
+dl_summary_RSV <- gather_draws(posterior_samples_RSV, eta[m]) %>%
+  median_hdi()
+
+ggplot(dl_summar_RSVy, aes(x=m, y=.value)) +
+  geom_line()+
+  geom_ribbon(aes(x=m, ymin=.lower, ymax=.upper), alpha=0.2)+
+  theme_classic()+
+  geom_hline(yintercept=0, lty=2)
 
 ```
 
+
+### AR1 component
+```{r}
+ar1_summary_RSV <- gather_draws(posterior_samples_RSV, alpha[i]) %>%
+  median_hdi()
+
+ggplot(ar1_summary_RSV, aes(x=i, y=.value)) +
+  geom_line()+
+  geom_ribbon(aes(x=i, ymin=.lower, ymax=.upper), alpha=0.2)+
+  theme_minimal()
