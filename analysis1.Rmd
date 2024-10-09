@@ -435,6 +435,39 @@ ggplot(humid_cum_effect_covid, aes(x=m, y=cum_effect)) +
 
 ```
 
+distributed lag eta (pm2.5)
+```{r}
+dl_summary <- gather_draws(posterior_samples, theta[m]) %>%
+  median_hdi()
+
+ggplot(dl_summary, aes(x=m, y=.value)) +
+  geom_line()+
+  geom_ribbon(aes(x=m, ymin=.lower, ymax=.upper), alpha=0.2)+
+  theme_classic()+
+  geom_hline(yintercept=0, lty=2)
+
+
+humid_draws_covid <- gather_draws(posterior_samples, theta[m]) 
+
+humid_cum_effect_covid <- humid_draws_covid %>%
+  arrange(.chain, .iteration, m) %>%
+  group_by(.chain, .iteration) %>%
+  mutate(cum_effect= cumsum(.value)) %>%
+  ungroup() %>%
+  dplyr::select(m,.chain, .iteration, cum_effect)%>%
+  group_by(m) %>%
+  median_hdi()
+
+ggplot(humid_cum_effect_covid, aes(x=m, y=cum_effect)) +
+  geom_line()+
+  geom_ribbon(aes(x=m, ymin=.lower, ymax=.upper), alpha=0.2)+
+  theme_classic()+
+  geom_hline(yintercept=0, lty=2)
+
+
+
+```
+
 
 ## Same model for Flu
 
@@ -768,5 +801,8 @@ pm2_5_coefs <- sapply(mod1, function(X){
 
 plot(1:13,pm2_5_coefs, type='l')
 abline(h=0)
+
+mod2 <- MASS::glm.nb(Cases_Total ~ pm2_5_lag3 + pm2_5_lag4 + pm2_5_lag5 +monthN, data=ds2)
+summary(mod2)
 ```
 
