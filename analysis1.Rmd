@@ -20,6 +20,11 @@ library(stringr)
 library(tidyr)
 library(tidybayes)
 
+library(tsModel)
+library(dlnm)
+
+library(INLA)
+library(RColorBrewer)
 ```
 
 read in data
@@ -66,7 +71,8 @@ ds1 <- read.csv('./Data/CONFIDENTIAL/CovidNet_AQ_Weather_08292024.csv') %>%
             humid_lag11=lag(humid,11),
             humid_lag12=lag(humid,12),
             humid_lag13=lag(humid,13),
-            humid_lag14=lag(humid,14)
+            humid_lag14=lag(humid,14),
+             month=as.factor(lubridate::month(date))
           ) %>%
   filter(!is.na(Cases_Total) & !is.na(humid_lag0)) %>%
   left_join(ds0, by='date')
@@ -80,10 +86,74 @@ ds1 <- read.csv('./Data/CONFIDENTIAL/CovidNet_AQ_Weather_08292024.csv') %>%
    as.matrix()
  
  
- dow_mat <- model.matrix(~day_of_week, data=ds1) 
- dow_mat <- dow_mat[,-1] #remove intercept
- 
+ dow_mat <- model.matrix(~-1 + day_of_week, data=ds1) 
+
+  month_mat <- model.matrix(~-1 + month, data=ds1) 
+  month_mat <- month_mat[,-1]
+  #dow_mat <- dow_mat[,-1] #remove intercept
+  
+  
 ```
+
+
+DLNM https://github.com/gasparrini/hydromet_dengue/blob/main/04_lag_nonlinear_output.R
+
+```{r}
+  nlag=14
+  pm2_5_lags <- Lag(ds1$pm2_5,k=0:nlag)
+  
+  basis_pm2_5 <- crossbasis(pm2_5_lags,
+                    argvar = list(fun = "ns", knots = equalknots(ds1$pm2_5, 2)),
+                    arglag = list(fun = "ns", knots = nlag/2))
+  colnames(basis_pm2_5) = paste0("basis_pm2_5.", colnames(basis_pm2_5))
+
+    humid_lags <- Lag(ds1$humid,k=0:nlag)
+  
+    basis_humid <- crossbasis(humid_lags,
+                    argvar = list(fun = "ns", knots = equalknots(ds1$humid, 2)),
+                    arglag = list(fun = "ns", knots = nlag/2))
+  colnames(basis_humid) = paste0("basis_humid", colnames(basis_humid))
+
+ 
+mod1 <-   inla(Cases_Total ~ day_of_week + month + basis_pm2_5 + basis_humid, family='poisson', data=ds1,
+                      control.predictor = list(link = 1, compute = TRUE),
+                control.fixed = list(correlation.matrix = TRUE, 
+                            prec.intercept = 1, prec = 1)
+               )
+
+
+#summary(mod1)
+
+
+# find position of the terms associated with Tmin crossbasis
+indt <- grep("basis_humid", mod1$names.fixed)
+
+# extract predictions from the Tmin DLNM centred on overall mean Tmin (19 deg C)
+
+coef <- mod1$summary.fixed$mean
+vcov <- mod1$misc$lincomb.derived.covariance.matrix
+
+predt <- crosspred(basis_humid, coef = coef[indt], vcov=vcov[indt,indt],
+                   model.link = "log", bylag = 0.25, cen = round(mean(ds1$humid), 2)) 
+
+y <- predt$predvar
+x <- seq(0, nlag, 0.25)
+z <- t(predt$matRRfit)
+
+pal <- rev(brewer.pal(11, "PRGn"))
+levels <- pretty(z, 20)
+col1 <- colorRampPalette(pal[1:6])
+col2 <- colorRampPalette(pal[6:11])
+cols <- c(col1(sum(levels < 1)), col2(sum(levels > 1)))
+
+filled.contour(x,y,z,
+               xlab = "Lag", ylab = 'Humidity', main = "",
+               col = cols,levels = levels,
+               plot.axes = { axis(1, at = 0:nlag, c(0:nlag)) 
+                 axis(2)})
+mtext(side = 2, at = max(y)*1.1, text = "a", las = 2, cex = 1.2, line = 2)
+```
+
 
 
 
@@ -101,7 +171,9 @@ for(i in 1:Ntimes){
 
   log(lambda[i]) <-   alpha[i] +inprod(delta[],dow_mat[i,]) +
                     inprod(epsilon[],pm2_5_mat[i,]) +
-                    inprod(eta[],   humid_mat[i,])
+                    inprod(eta[],   humid_mat[i,]) +
+                    inprod(theta[],   pm2_5_mat[i,]) 
+                    
   
 
 }
@@ -128,14 +200,79 @@ for(i in 1:Ntimes){
     eta[m] ~ dnorm(rho3 *eta[m-1] , tau.eta2)
   }
   
+    theta[1] ~ dnorm(0, (1 - rho4^2) * tau.theta2)
+  for(m in 2:15){
+    theta[m] ~ dnorm(rho4 *theta[m-1] , tau.theta2)
+  }
+  
 
   tau.alpha1 ~ dgamma(3, 2)  # Tight prior for tau 
   tau.epsilon2 ~ dgamma(3, 2)  # Tight prior for tau 
   tau.eta2 ~ dgamma(3, 2)  # Tight prior for tau 
+  tau.theta2 ~ dgamma(3, 2)  # Tight prior for tau 
 
   rho1 ~ dunif(0, 1)       # Uniform prior for rho
   rho2 ~ dunif(0, 1)       # Uniform prior for rho
   rho3 ~ dunif(0, 1)       # Uniform prior for rho
+  rho4 ~ dunif(0, 1)       # Uniform prior for rho
+
+  mu0 ~ dnorm(0, 1e-4)   # Uninformative prior for intercept
+  
+  r ~ dunif(0,250)
+
+}
+"
+
+
+##SIMPLIFIED VERSION
+
+model_string_simp <- "
+
+model{
+for(i in 1:Ntimes){
+
+  cases[i] ~ dnegbin(prob[i],r)
+  prob[i]<- r/(r+lambda[i])  ## likelihood 
+
+  log(lambda[i]) <-    inprod(epsilon[],month_mat[i,]) +inprod(delta[],dow_mat[i,]) + 
+                    inprod(eta[],   humid_mat[i,]) +
+                    inprod(theta[],   pm2_5_mat[i,]) 
+}
+
+  #day of week effects
+  for(k in 1:7){
+    delta[k]~dnorm(0,tau.delta)
+  }
+  
+  
+  alpha ~ dnorm(0,(1 - rho2^2) * tau.epsilon2)
+  
+  epsilon[1] <- alpha
+  for(m in 2:11){
+    epsilon[m] ~ dnorm(rho2 *epsilon[m-1] , tau.epsilon2)
+  }
+  
+  eta[1] ~ dnorm(0, (1 - rho3^2) * tau.eta2)
+  for(m in 2:15){
+    eta[m] ~ dnorm(rho3 *eta[m-1] , tau.eta2)
+  }
+  
+   theta[1] ~ dnorm(0, (1 - rho4^2) * tau.theta2)
+  for(m in 2:15){
+    theta[m] ~ dnorm(rho4 *theta[m-1] , tau.theta2)
+  }
+  
+  
+  tau.delta ~ dgamma(0.01,0.01)  #uninfrotmatve prior
+
+  tau.epsilon2 ~ dgamma(3, 2)  # Tight prior for tau 
+  tau.eta2 ~ dgamma(3, 2)  # Tight prior for tau 
+  tau.theta2 ~ dgamma(3, 2)  # Tight prior for tau 
+
+  rho1 ~ dunif(0, 1)       # Uniform prior for rho
+  rho2 ~ dunif(0, 1)       # Uniform prior for rho
+  rho3 ~ dunif(0, 1)       # Uniform prior for rho
+  rho4 ~ dunif(0, 1)       # Uniform prior for rho
 
   mu0 ~ dnorm(0, 1e-4)   # Uninformative prior for intercept
   
@@ -156,14 +293,15 @@ inits3=list(".RNG.seed"=c(789), ".RNG.name"='base::Wichmann-Hill')
 
 ### Initialize the model for COVID
 ```{r}
-model_spec<-textConnection(model_string)
+model_spec<-textConnection(model_string_simp)
 model_jags<-jags.model(model_spec,
                        inits=list(inits1,inits2, inits3),
                        data=list('Ntimes'= nrow(ds1)  ,
                                  'cases'= ds1$Cases_Total,
-                                 'pm2_5_mat'=pm2_5_mat,
+                                 'month_mat'=month_mat,
                                  'dow_mat'=dow_mat,
-                                 'humid_mat'=humid_mat
+                                 'humid_mat'=humid_mat,
+                                 'pm2_5_mat'=pm2_5_mat
                        ),
                        n.adapt=15000,
                        n.chains=3, quiet=F)
@@ -181,7 +319,11 @@ params<-c('rho1', 'mu0','alpha','tau.alpha1','lambda', 'epsilon','eta')
 posterior_samples<-coda.samples(model_jags, 
                                 params, 
                                 n.iter=10000)
+
+saveRDS(posterior_samples,'./Data/covid_posteriors.rds')
+
 ```
+
 ## examine lambda
 ```{r}
 test <- gather_draws(posterior_samples, lambda[i])
@@ -200,7 +342,7 @@ ggplot( aes(x=.iteration, y=.value, group=.chain, color=.chain), alpha=0.2) +
 test <- gather_draws(posterior_samples, epsilon[i])
 
 test %>%
-  filter(i==1) %>%
+  filter(i==3) %>%
   mutate(.chain=as.factor(.chain)) %>%
 ggplot( aes(x=.iteration, y=.value, group=.chain, color=.chain), alpha=0.2) +
   geom_line()+
@@ -233,7 +375,8 @@ ggplot(lambda_quant, aes(x=i, y=.value)) +
 ```
 
 
-### distributed lag for COVID
+### Seasonal effect
+month+intercept has nice convergence(chang coding so that month1=intercept to avoid this issue)
 ```{r}
 dl_summary <- gather_draws(posterior_samples, epsilon[m]) %>%
   median_hdi()
@@ -244,12 +387,17 @@ ggplot(dl_summary, aes(x=m, y=.value)) +
   theme_minimal()+
   geom_hline(yintercept=0, lty=2)
 
-test <- gather_draws(posterior_samples, epsilon[i])
+test_a <- gather_draws(posterior_samples, epsilon[i])
+test_b <- gather_draws(posterior_samples, alpha) %>% rename(value_alpha=.value)
 
-test %>%
+test_comb <- test_a %>%
+  left_join(test_b, by=c('.chain','.iteration','.draw')) %>%
+  mutate(beta_comb=value_alpha+.value)
+  
+test_comb %>%
   filter(i==1) %>%
   mutate(.chain=as.factor(.chain)) %>%
-ggplot( aes(x=.iteration, y=.value, group=.chain, color=.chain), alpha=0.2) +
+ggplot( aes(x=.iteration, y=beta_comb, group=.chain, color=.chain), alpha=0.2) +
   geom_line()+
   theme_classic()
 ```
@@ -265,25 +413,32 @@ ggplot(dl_summary, aes(x=m, y=.value)) +
   theme_classic()+
   geom_hline(yintercept=0, lty=2)
 
-```
 
+humid_draws_covid <- gather_draws(posterior_samples, eta[m]) 
 
-### AR1 component
-```{r}
-ar1_summary <- gather_draws(posterior_samples, alpha[i]) %>%
+humid_cum_effect_covid <- humid_draws_covid %>%
+  arrange(.chain, .iteration, m) %>%
+  group_by(.chain, .iteration) %>%
+  mutate(cum_effect= cumsum(.value)) %>%
+  ungroup() %>%
+  dplyr::select(m,.chain, .iteration, cum_effect)%>%
+  group_by(m) %>%
   median_hdi()
 
-ggplot(ar1_summary, aes(x=i, y=.value)) +
+ggplot(humid_cum_effect_covid, aes(x=m, y=cum_effect)) +
   geom_line()+
-  geom_ribbon(aes(x=i, ymin=.lower, ymax=.upper), alpha=0.2)+
-  theme_minimal()
+  geom_ribbon(aes(x=m, ymin=.lower, ymax=.upper), alpha=0.2)+
+  theme_classic()+
+  geom_hline(yintercept=0, lty=2)
+
+
 
 ```
 
 
 ## Same model for Flu
 
-### Initialize the model for COVID
+### Initialize the model for FLU
 ```{r}
 model_spec<-textConnection(model_string)
 model_jags_flu<-jags.model(model_spec,
@@ -310,7 +465,10 @@ params<-c('rho1', 'mu0','alpha','tau.alpha1','lambda', 'epsilon','eta')
 posterior_samples_flu<-coda.samples(model_jags_flu, 
                                 params, 
                                 n.iter=10000)
+
+saveRDS(posterior_samples_flu,'./Data/flu_posteriors.rds')
 ```
+
 ## examine lambda
 ```{r}
 test_flu <- gather_draws(posterior_samples_flu, lambda[i])
@@ -388,7 +546,7 @@ distributed lag eta (humidity)
 dl_summary_flu <- gather_draws(posterior_samples_flu, eta[m]) %>%
   median_hdi()
 
-ggplot(dl_summar_fluy, aes(x=m, y=.value)) +
+ggplot(dl_summary_flu, aes(x=m, y=.value)) +
   geom_line()+
   geom_ribbon(aes(x=m, ymin=.lower, ymax=.upper), alpha=0.2)+
   theme_classic()+
@@ -414,7 +572,7 @@ ggplot(ar1_summary_flu, aes(x=i, y=.value)) +
 ## Same model for RSV
 
 ### Initialize the model for COVID
-```{r}
+```{r, eval=F}
 model_spec<-textConnection(model_string)
 model_jags_RSV<-jags.model(model_spec,
                            inits=list(inits1,inits2, inits3),
@@ -436,10 +594,12 @@ params<-c('rho1', 'mu0','alpha','tau.alpha1','lambda', 'epsilon','eta')
 
 ```
 
-```{r}
-posterior_samples_RSV<-coda.samples(model_jags_RSV, 
-                                    params, 
+```{r, eval=F}
+posterior_samples_RSV<-coda.samples(model_jags_RSV,
+                                    params,
                                     n.iter=10000)
+saveRDS(posterior_samples_RSV,'./Data/rsv_posteriors.rds')
+
 ```
 ## examine lambda
 ```{r}
@@ -517,7 +677,7 @@ distributed lag eta (humidity)
 dl_summary_RSV <- gather_draws(posterior_samples_RSV, eta[m]) %>%
   median_hdi()
 
-ggplot(dl_summar_RSVy, aes(x=m, y=.value)) +
+ggplot(dl_summary_RSV, aes(x=m, y=.value)) +
   geom_line()+
   geom_ribbon(aes(x=m, ymin=.lower, ymax=.upper), alpha=0.2)+
   theme_classic()+
@@ -535,3 +695,47 @@ ggplot(ar1_summary_RSV, aes(x=i, y=.value)) +
   geom_line()+
   geom_ribbon(aes(x=i, ymin=.lower, ymax=.upper), alpha=0.2)+
   theme_minimal()
+```
+simple..
+```{r}
+
+ds2 <- ds1 %>%
+  arrange(date) %>%
+  mutate(flu_lag1=lag(Flu_Total,1),
+         log_flu_lag1 =log(flu_lag1+1),
+         monthN=as.factor(lubridate::month(date)))
+mod1 <- list()
+
+humid.select <- c( 'humid_lag1','humid_lag2','humid_lag3','humid_lag4','humid_lag5','humid_lag6','humid_lag7','humid_lag8','humid_lag9',
+                  'humid_lag10','humid_lag11','humid_lag12','humid_lag13')
+
+pm2_5.select <- c( 'pm2_5_lag0','pm2_5_lag1','pm2_5_lag2','pm2_5_lag3','pm2_5_lag4','pm2_5_lag5','pm2_5_lag6','pm2_5_lag7','pm2_5_lag8','pm2_5_lag9',  'pm2_5_lag10','pm2_5_lag11','pm2_5_lag12','pm2_5_lag13')
+
+for(i in 1:13){
+  ds2$humidvar <- ds2[,humid.select[i]]
+mod1[[i]] <- MASS::glm.nb(Cases_Total ~ humidvar +monthN, data=ds2)
+}
+
+humid_coefs <- sapply(mod1, function(X){
+  coef(X)['humidvar']
+    })
+
+plot(1:13,humid_coefs, type='l')
+abline(h=0)
+
+
+#pm2.5
+
+for(i in 1:13){
+  ds2$pm25_var <- ds2[,pm2_5.select[i]]
+mod1[[i]] <- MASS::glm.nb(Cases_Total ~ pm25_var +monthN, data=ds2)
+}
+
+pm2_5_coefs <- sapply(mod1, function(X){
+  coef(X)['pm25_var']
+    })
+
+plot(1:13,pm2_5_coefs, type='l')
+abline(h=0)
+```
+
