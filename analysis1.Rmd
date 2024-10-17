@@ -3,6 +3,7 @@ title: "analysis1"
 output: html_document
 date: "2024-08-28"
 ---
+TO TRY--detrend data with RW2 model first, then look at residuals vs pm2.5
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
@@ -19,6 +20,7 @@ library(rjags)
 library(stringr)
 library(tidyr)
 library(tidybayes)
+library(lubridate)
 
 library(tsModel)
 library(dlnm)
@@ -39,7 +41,12 @@ ds1 <- read.csv('./Data/CONFIDENTIAL/CovidNet_AQ_Weather_08292024.csv') %>%
  mutate( date =as.Date(date,'%m/%d/%Y'),
     day_of_week=as.factor(weekdays(date)),
     
-    pm2_5=scale(log(pm2_5)),
+    log_Cases_Total=log(Cases_Total+1),
+    log_Cases_Total_lag7=lag(log_Cases_Total,7),
+    log_Cases_Total_lag14=lag(log_Cases_Total,14),
+    
+    pm2_5_raw=pm2_5,
+          pm2_5=scale(pm2_5_raw),
           pm2_5_lag0=pm2_5,
           pm2_5_lag1 =lag(pm2_5,1),
           pm2_5_lag2 =lag(pm2_5,2),
@@ -56,6 +63,28 @@ ds1 <- read.csv('./Data/CONFIDENTIAL/CovidNet_AQ_Weather_08292024.csv') %>%
           pm2_5_lag13 =lag(pm2_5,13),
           pm2_5_lag14 =lag(pm2_5,14),
     
+          pm2_5_dic=if_else(pm2_5_raw>15,1,0),
+          pm2_5_dic_lag0=pm2_5_dic,
+          pm2_5_dic_lag1 = lag(pm2_5_dic,1),
+          pm2_5_dic_lag2 = lag(pm2_5_dic,2),
+          pm2_5_dic_lag3 = lag(pm2_5_dic,3),
+          pm2_5_dic_lag4 = lag(pm2_5_dic,4),
+          pm2_5_dic_lag5 = lag(pm2_5_dic,5),
+          pm2_5_dic_lag6 = lag(pm2_5_dic,6),
+          pm2_5_dic_lag7 = lag(pm2_5_dic,7),
+          pm2_5_dic_lag8 = lag(pm2_5_dic,8),
+          pm2_5_dic_lag9 = lag(pm2_5_dic,9),
+          pm2_5_dic_lag10 = lag(pm2_5_dic,10),
+          pm2_5_dic_lag11 = lag(pm2_5_dic,11),
+          pm2_5_dic_lag12 = lag(pm2_5_dic,12),
+          pm2_5_dic_lag13 = lag(pm2_5_dic,13),
+          pm2_5_dic_lag14 = lag(pm2_5_dic,14),
+
+    ave_pm2_5_day_2_9= (pm2_5_lag3 + pm2_5_lag4 + pm2_5_lag5 + pm2_5_lag6 + pm2_5_lag7 + pm2_5_lag8 + pm2_5_lag9)/7,
+    
+        ave_pm2_5_day_1_5= (pm2_5_lag1 + pm2_5_lag2 + pm2_5_lag3 + pm2_5_lag4 + pm2_5_lag5)/5,
+    
+    humid_raw=humid,
     humid=scale(humid),
             humid_lag0 =humid,
             humid_lag1=lag(humid,1),
@@ -72,7 +101,8 @@ ds1 <- read.csv('./Data/CONFIDENTIAL/CovidNet_AQ_Weather_08292024.csv') %>%
             humid_lag12=lag(humid,12),
             humid_lag13=lag(humid,13),
             humid_lag14=lag(humid,14),
-             month=as.factor(lubridate::month(date))
+             month=as.factor(lubridate::month(date)),
+    t=row_number()
           ) %>%
   filter(!is.na(Cases_Total) & !is.na(humid_lag0)) %>%
   left_join(ds0, by='date')
@@ -81,21 +111,128 @@ ds1 <- read.csv('./Data/CONFIDENTIAL/CovidNet_AQ_Weather_08292024.csv') %>%
    select(starts_with('pm2_5_lag')) %>%
    as.matrix()
  
+  pm2_5_mat_dic <- ds1 %>%
+   select(starts_with('pm2_5_dic_lag')) %>%
+   as.matrix()
+ 
   humid_mat <- ds1 %>%
    select(starts_with('humid_lag')) %>%
    as.matrix()
  
  
  dow_mat <- model.matrix(~-1 + day_of_week, data=ds1) 
+ dow_mat <- dow_mat[,-1] #remove intercept
 
   month_mat <- model.matrix(~-1 + month, data=ds1) 
   month_mat <- month_mat[,-1]
-  #dow_mat <- dow_mat[,-1] #remove intercept
-  
+
   
 ```
 
+```{r}
+plot(ds1$ave_pm2_5_day_2_9,ds1$Cases_Total)
+```
 
+```{r}
+mod1 <- mgcv::gam(Cases_Total~ day_of_week + month +   s(t) + s(ave_pm2_5_day_1_5, bs='ps'), family='poisson', data=ds1)
+
+ plot(mod1)
+ abline(h=0)
+ abline(v=20)
+
+mod1 <- mgcv::gam(Cases_Total~  s(t, bs='ps') +   ave_pm2_5_day_1_5 +day_of_week, family='poisson', data=ds1)
+
+#library("splines")
+
+ds1$pm2_5_round=round(ds1$ave_pm2_5_day_1_5,1)
+
+mod2 <- inla(Cases_Total~ f(t, model='rw2', scale.model=T) + ave_pm2_5_day_1_5 + day_of_week , family='nbinomial', data=ds1)
+
+mod2 <- inla(Cases_Total~ f(t, model='rw2', scale.model=F) + pm2_5_lag1 + pm2_5_lag2 +pm2_5_lag3 +pm2_5_lag4 +pm2_5_lag5 + day_of_week , family='nbinomial', data=ds1)
+
+coefs <- mod2$summary.fixed
+coefs.lag <- coefs[grep('lag',row.names(coefs)),'mean']
+
+plot(coefs.lag, type='l')
+abline(h=0)
+
+plot(mod2)
+
+# plot(mod2$summary.random$t$mean, ds1$pm2_5_raw) #doesn't seem to be correlation between PM2.5 and time rnadom effect
+# abline(v=0)
+
+# mod1 <- mgcv::gam(RSV_Total~ day_of_week + month +  s(pm2_5_raw, bs='ps'), family='poisson', data=ds1)
+# plot(mod1)
+```
+
+
+
+## Distributed lag linear models
+whether you adjust time using a monthly dummy or using a RW2 makes a huge effect on estimates of PM2.5 effect
+```{r}
+  nlag=14
+
+  basis_pm2_5_lin <-   crossbasis(ds1$pm2_5, lag=20, argvar=list(fun="lin"),
+      arglag=list(fun="poly",degree=20))
+  colnames(basis_pm2_5_lin) = paste0("basis_pm2_5.", colnames(basis_pm2_5_lin))
+
+
+mod1_lin <-   inla(Cases_Total ~ day_of_week  + basis_pm2_5_lin + f(t, model='rw2'), family='poisson', data=ds1,
+                      control.predictor = list(link = 1, compute = TRUE),
+                   control.compute=list(return.marginals.predictor=TRUE),
+                control.fixed = list(correlation.matrix = TRUE, 
+                            prec.intercept = 1e-4, prec = 1)
+               )
+summary(mod1_lin)
+
+mod1.coef <- mod1_lin$summary.fixed[grep('basis_pm',row.names(mod1_lin$summary.fixed)),'mean']
+
+mod1.vcov <-mod1_lin$misc$lincomb.derived.covariance.matrix[grep('basis_pm',row.names(mod1_lin$summary.fixed)),grep('basis_pm',row.names(mod1_lin$summary.fixed))]
+
+pred1.pm <- crosspred(basis_pm2_5_lin, coef=mod1.coef, vcov=mod1.vcov, at=-10:40,bylag=0.2, cumul=TRUE)
+
+
+plot(pred1.pm, "overall", var=1,lag=1, col=3, ylab="RR", ci.arg=list(density=15,lwd=2),
+main="log-RR")
+
+plot(pred1.pm, "slices", var=1, col=3, ylab="RR", ci.arg=list(density=15,lwd=2),
+main="Association with an 1 SD increase in PM2.5")
+
+ plot(pred1.pm, "slices", var=1, col=2, cumul=TRUE, ylab="Cumulative RR",
+main="Cumulative association with a 1-SD increase in PM2.5")
+ 
+ 
+## Control for calendar time instead with a month dummy
+
+ ds2 <- ds1 %>%
+   mutate(cal_month= as.factor(paste(year(date), month(date), '01', sep='-')))
+
+ mod2_lin <-   inla(Cases_Total ~ day_of_week  + basis_pm2_5_lin +cal_month, family='poisson', data=ds2,
+                      control.predictor = list(link = 1, compute = TRUE),
+                   control.compute=list(return.marginals.predictor=TRUE),
+                control.fixed = list(correlation.matrix = TRUE, 
+                            prec.intercept = 1e-4, prec = 1)
+               )
+#summary(mod1_lin)
+
+mod2.coef <- mod2_lin$summary.fixed[grep('basis_pm',row.names(mod2_lin$summary.fixed)),'mean']
+
+mod2.vcov <-mod2_lin$misc$lincomb.derived.covariance.matrix[grep('basis_pm',row.names(mod2_lin$summary.fixed)),grep('basis_pm',row.names(mod2_lin$summary.fixed))]
+
+pred2.pm <- crosspred(basis_pm2_5_lin, coef=mod2.coef, vcov=mod2.vcov, at=-10:40,bylag=0.2, cumul=TRUE)
+
+
+plot(pred2.pm, "overall", var=1,lag=1, col=3, ylab="logRR", ci.arg=list(density=15,lwd=2),
+main="log-RR")
+
+plot(pred2.pm, "slices", var=1, col=3, ylab="logRR", ci.arg=list(density=15,lwd=2),
+main="Association with an 1 SD increase in PM2.5")
+
+ plot(pred2.pm, "slices", var=1, col=2, cumul=TRUE, ylab="Cumulative RR",
+main="Cumulative association with a 1-SD increase in PM2.5")
+```
+
+DLNM model
 DLNM https://github.com/gasparrini/hydromet_dengue/blob/main/04_lag_nonlinear_output.R
 
 ```{r}
@@ -105,36 +242,42 @@ DLNM https://github.com/gasparrini/hydromet_dengue/blob/main/04_lag_nonlinear_ou
   basis_pm2_5 <- crossbasis(pm2_5_lags,
                     argvar = list(fun = "ns", knots = equalknots(ds1$pm2_5, 2)),
                     arglag = list(fun = "ns", knots = nlag/2))
+  
   colnames(basis_pm2_5) = paste0("basis_pm2_5.", colnames(basis_pm2_5))
 
-    humid_lags <- Lag(ds1$humid,k=0:nlag)
+  humid_lags <- Lag(ds1$humid,k=0:nlag)
   
     basis_humid <- crossbasis(humid_lags,
                     argvar = list(fun = "ns", knots = equalknots(ds1$humid, 2)),
                     arglag = list(fun = "ns", knots = nlag/2))
   colnames(basis_humid) = paste0("basis_humid", colnames(basis_humid))
-
- 
+  
 mod1 <-   inla(Cases_Total ~ day_of_week + month + basis_pm2_5 + basis_humid, family='poisson', data=ds1,
                       control.predictor = list(link = 1, compute = TRUE),
                 control.fixed = list(correlation.matrix = TRUE, 
-                            prec.intercept = 1, prec = 1)
+                            prec.intercept = 1e-4, prec = 1e-4)
                )
-
-
-#summary(mod1)
-
-
-# find position of the terms associated with Tmin crossbasis
-indt <- grep("basis_humid", mod1$names.fixed)
-
-# extract predictions from the Tmin DLNM centred on overall mean Tmin (19 deg C)
-
+# extract full coef and vcov and create indicators for each term
 coef <- mod1$summary.fixed$mean
 vcov <- mod1$misc$lincomb.derived.covariance.matrix
 
-predt <- crosspred(basis_humid, coef = coef[indt], vcov=vcov[indt,indt],
-                   model.link = "log", bylag = 0.25, cen = round(mean(ds1$humid), 2)) 
+# find position of the terms associated with Tmin crossbasis
+indt <- grep("basis_pm2_5", mod1$names.fixed)
+
+# extract predictions from the Tmin DLNM centred on overall mean Tmin (19 deg C)
+
+predt <- crosspred(basis_pm2_5, coef = coef[indt], vcov=vcov[indt,indt],
+                    bylag = 0.25, cen = round(mean(ds1$pm2_5), 2), cumul=T) 
+
+
+plot(predt, "overall", var=1, col=3, ylab="logRR", ci.arg=list(density=15,lwd=2),
+main="log-RR")
+
+plot(predt, "slices", var=1, lag=2,col=3, ylab="logRR", ci.arg=list(density=15,lwd=2),
+main="Association with an 1 SD increase in PM2.5")
+
+ plot(predt, "slices", var=1,lag=3, col=2, cumul=TRUE, ylab="Cumulative log_RR",
+main="Cumulative association with a 1-SD increase in PM2.5")
 
 y <- predt$predvar
 x <- seq(0, nlag, 0.25)
@@ -154,7 +297,74 @@ filled.contour(x,y,z,
 mtext(side = 2, at = max(y)*1.1, text = "a", las = 2, cex = 1.2, line = 2)
 ```
 
+hhh4 model
+```{r}
+library(surveillance)
 
+cases <- ds1 %>% 
+    reshape2::dcast(date~., value.var= 'Cases_Total') %>%
+  dplyr::select(-date) %>%
+    as.matrix() 
+
+pm2_5_mat <- ds1 %>% 
+    reshape2::dcast(date~., value.var= 'pm2_5_lag5') %>%
+  dplyr::select(-date) %>%
+    as.matrix() 
+
+mod_str1 <- list(
+      end = list(f = ~ 1 + day1 +day2 + day3 +day4+day5+day6 +pm2_5_mat ),
+      ar = list(f = ~ 1  ),
+      ne = list(f = ~ -1 ), #single location, no neighbords
+      family = "NegBin1",
+      data=list(pm2_5_mat=pm2_5_mat,
+                day1=dow_mat[,1,drop=F],
+                day2=dow_mat[,2,drop=F],
+                day3=dow_mat[,3,drop=F],
+                day4=dow_mat[,4,drop=F],
+                day5=dow_mat[,5,drop=F],
+                day6=dow_mat[,6,drop=F])
+    )
+
+ #Define STS object
+first.date=min(ds1$date)
+start.month=lubridate::month(first.date)
+start.year=lubridate::year(first.date)
+
+  covid_df <- sts(cases, start = c(start.year, start.month), frequency = 365)
+  
+  hhh4_fit <- hhh4(stsObj = covid_df, control = mod_str1)
+  
+  summary(hhh4_fit)
+
+```
+
+
+## try to detrend first, then look at association
+```{r}
+mod1 <-   inla(Cases_Total ~ day_of_week + f(t, model='rw2', scale.model=F) , family='poisson', data=ds1,
+                      control.predictor = list(link = 1, compute = TRUE),
+                control.fixed = list(correlation.matrix = TRUE, 
+                            prec.intercept = 1e-4, prec = 1e-4)
+               )
+
+plot(mod1)
+
+preds <- exp(mod1$summary.linear.predictor$mean)
+
+
+ds1 <- ds1 %>%
+  mutate(detrended = Cases_Total / preds)
+
+ggplot(ds1) +
+  geom_point(x=detrended, y=pm2_5_lag2)
+
+plot(ds1$pm2_5_lag5,log(ds1$detrended))
+abline(h=0)
+cor(ds1$pm2_5_lag5,(ds1$detrended))
+
+cor(ds1$pm2_5_lag5,preds)
+
+```
 
 
 
@@ -234,45 +444,38 @@ for(i in 1:Ntimes){
   cases[i] ~ dnegbin(prob[i],r)
   prob[i]<- r/(r+lambda[i])  ## likelihood 
 
-  log(lambda[i]) <-    inprod(epsilon[],month_mat[i,]) +inprod(delta[],dow_mat[i,]) + 
-                    inprod(eta[],   humid_mat[i,]) +
+  log(lambda[i]) <-    alpha + epsilon[i] +
+                    inprod(delta[], dow_mat[i,]) +
                     inprod(theta[],   pm2_5_mat[i,]) 
 }
 
-  #day of week effects
-  for(k in 1:7){
-    delta[k]~dnorm(0,tau.delta)
+   #day of week effects
+  for(k in 1:6){
+    delta[k]~dnorm(0,1e-4)
   }
   
   
-  alpha ~ dnorm(0,(1 - rho2^2) * tau.epsilon2)
-  
-  epsilon[1] <- alpha
-  for(m in 2:11){
-    epsilon[m] ~ dnorm(rho2 *epsilon[m-1] , tau.epsilon2)
-  }
-  
-  eta[1] ~ dnorm(0, (1 - rho3^2) * tau.eta2)
-  for(m in 2:15){
-    eta[m] ~ dnorm(rho3 *eta[m-1] , tau.eta2)
-  }
-  
-   theta[1] ~ dnorm(0, (1 - rho4^2) * tau.theta2)
-  for(m in 2:15){
-    theta[m] ~ dnorm(rho4 *theta[m-1] , tau.theta2)
-  }
-  
-  
-  tau.delta ~ dgamma(0.01,0.01)  #uninfrotmatve prior
+  epsilon[1] <- 0
+  epsilon[2] ~ dnorm(epsilon[1], tau.epsilon2)  # Second value depends on first
 
-  tau.epsilon2 ~ dgamma(3, 2)  # Tight prior for tau 
-  tau.eta2 ~ dgamma(3, 2)  # Tight prior for tau 
+      for(m in 3:Ntimes){
+        epsilon[m] ~ dnorm(2 * epsilon[m-1] - epsilon[m-2], tau.epsilon2)
+      }
+  
+  alpha~ dnorm(0,1e-4)
+  
+ theta[1] ~ dnorm(0, (1 - rho2^2) * tau.theta2)
+  for(m in 2:15){
+    theta[m] ~ dnorm(rho2 *theta[m-1] , tau.theta2)
+  }
+
   tau.theta2 ~ dgamma(3, 2)  # Tight prior for tau 
+
+  #tau.epsilon <- exp(log.tau.epsilon)
+  tau.epsilon2 ~ dgamma(1, 5e-5) #this is what INLA uses
 
   rho1 ~ dunif(0, 1)       # Uniform prior for rho
   rho2 ~ dunif(0, 1)       # Uniform prior for rho
-  rho3 ~ dunif(0, 1)       # Uniform prior for rho
-  rho4 ~ dunif(0, 1)       # Uniform prior for rho
 
   mu0 ~ dnorm(0, 1e-4)   # Uninformative prior for intercept
   
@@ -298,10 +501,8 @@ model_jags<-jags.model(model_spec,
                        inits=list(inits1,inits2, inits3),
                        data=list('Ntimes'= nrow(ds1)  ,
                                  'cases'= ds1$Cases_Total,
-                                 'month_mat'=month_mat,
                                  'dow_mat'=dow_mat,
-                                 'humid_mat'=humid_mat,
-                                 'pm2_5_mat'=pm2_5_mat
+                                 'pm2_5_mat'=pm2_5_mat_dic
                        ),
                        n.adapt=15000,
                        n.chains=3, quiet=F)
@@ -311,7 +512,7 @@ model_jags<-jags.model(model_spec,
 
 what parameters do you want to sample?
 ```{r}
-params<-c('rho1', 'mu0','alpha','tau.alpha1','lambda', 'epsilon','eta', 'theta')
+params<-c('rho1', 'mu0','lambda', 'epsilon', 'theta')
 
 ```
 
@@ -342,19 +543,6 @@ ggplot( aes(x=.iteration, y=.value, group=.chain, color=.chain), alpha=0.2) +
 test <- gather_draws(posterior_samples, epsilon[i])
 
 test %>%
-  filter(i==3) %>%
-  mutate(.chain=as.factor(.chain)) %>%
-ggplot( aes(x=.iteration, y=.value, group=.chain, color=.chain), alpha=0.2) +
-  geom_line()+
-  theme_classic()
-
-
-```
-
-```{r}
-test <- gather_draws(posterior_samples, eta[i])
-
-test %>%
   filter(i==1) %>%
   mutate(.chain=as.factor(.chain)) %>%
 ggplot( aes(x=.iteration, y=.value, group=.chain, color=.chain), alpha=0.2) +
@@ -363,6 +551,8 @@ ggplot( aes(x=.iteration, y=.value, group=.chain, color=.chain), alpha=0.2) +
 
 
 ```
+
+
 
 HDI for lambda
 ```{r}
@@ -374,68 +564,7 @@ ggplot(lambda_quant, aes(x=i, y=.value)) +
   theme_minimal()
 ```
 
-
-### Seasonal effect
-month+intercept has nice convergence(chang coding so that month1=intercept to avoid this issue)
-```{r}
-dl_summary <- gather_draws(posterior_samples, epsilon[m]) %>%
-  median_hdi()
-
-ggplot(dl_summary, aes(x=m, y=.value)) +
-  geom_line()+
-  geom_ribbon(aes(x=m, ymin=.lower, ymax=.upper), alpha=0.2)+
-  theme_minimal()+
-  geom_hline(yintercept=0, lty=2)
-
-test_a <- gather_draws(posterior_samples, epsilon[i])
-#test_b <- gather_draws(posterior_samples, alpha) %>% rename(value_alpha=.value)
-
-# test_comb <- test_a %>%
-#   left_join(test_b, by=c('.chain','.iteration','.draw')) %>%
-#   mutate(beta_comb=value_alpha+.value)
-  
-test_a %>%
-  filter(i==1) %>%
-  mutate(.chain=as.factor(.chain)) %>%
-ggplot( aes(x=.iteration, y=.value, group=.chain, color=.chain), alpha=0.2) +
-  geom_line()+
-  theme_classic()
-```
-
-distributed lag eta (humidity)
-```{r}
-dl_summary <- gather_draws(posterior_samples, eta[m]) %>%
-  median_hdi()
-
-ggplot(dl_summary, aes(x=m, y=.value)) +
-  geom_line()+
-  geom_ribbon(aes(x=m, ymin=.lower, ymax=.upper), alpha=0.2)+
-  theme_classic()+
-  geom_hline(yintercept=0, lty=2)
-
-
-humid_draws_covid <- gather_draws(posterior_samples, eta[m]) 
-
-humid_cum_effect_covid <- humid_draws_covid %>%
-  arrange(.chain, .iteration, m) %>%
-  group_by(.chain, .iteration) %>%
-  mutate(cum_effect= cumsum(.value)) %>%
-  ungroup() %>%
-  dplyr::select(m,.chain, .iteration, cum_effect)%>%
-  group_by(m) %>%
-  median_hdi()
-
-ggplot(humid_cum_effect_covid, aes(x=m, y=cum_effect)) +
-  geom_line()+
-  geom_ribbon(aes(x=m, ymin=.lower, ymax=.upper), alpha=0.2)+
-  theme_classic()+
-  geom_hline(yintercept=0, lty=2)
-
-
-
-```
-
-distributed lag eta (pm2.5)
+distributed lag theta (pm2.5)
 ```{r}
 dl_summary <- gather_draws(posterior_samples, theta[m]) %>%
   median_hdi()
@@ -467,6 +596,25 @@ ggplot(humid_cum_effect_covid, aes(x=m, y=cum_effect)) +
 
 
 ```
+RW2 component
+
+```{r}
+rw_draws_covid <- gather_draws(posterior_samples, epsilon[i]) 
+
+rw_effect_covid <- rw_draws_covid %>%
+  arrange(.chain, .iteration, i) %>%
+  ungroup() %>%
+  dplyr::select(i,.chain, .iteration, .value)%>%
+  group_by(i) %>%
+  median_hdi()
+
+ggplot(rw_effect_covid, aes(x=i, y=.value)) +
+  geom_line()+
+  geom_ribbon(aes(x=i, ymin=.lower, ymax=.upper), alpha=0.2)+
+  theme_classic()+
+  geom_hline(yintercept=0, lty=2)
+```
+
 
 
 ## Same model for Flu
@@ -775,6 +923,10 @@ humid.select <- c( 'humid_lag1','humid_lag2','humid_lag3','humid_lag4','humid_la
 
 pm2_5.select <- c( 'pm2_5_lag0','pm2_5_lag1','pm2_5_lag2','pm2_5_lag3','pm2_5_lag4','pm2_5_lag5','pm2_5_lag6','pm2_5_lag7','pm2_5_lag8','pm2_5_lag9',  'pm2_5_lag10','pm2_5_lag11','pm2_5_lag12','pm2_5_lag13')
 
+pm2_5.select2 <- c( 'pm2_5_dic','pm2_5_dic_lag1','pm2_5_dic_lag2','pm2_5_dic_lag3','pm2_5_dic_lag4','pm2_5_dic_lag5','pm2_5_dic_lag6','pm2_5_dic_lag7','pm2_5_dic_lag8','pm2_5_dic_lag9',  'pm2_5_dic_lag10')
+
+mod1 <- list()
+
 for(i in 1:13){
   ds2$humidvar <- ds2[,humid.select[i]]
 mod1[[i]] <- MASS::glm.nb(Cases_Total ~ humidvar +monthN, data=ds2)
@@ -789,20 +941,21 @@ abline(h=0)
 
 
 #pm2.5
+mod1 <- list()
 
-for(i in 1:13){
-  ds2$pm25_var <- ds2[,pm2_5.select[i]]
-mod1[[i]] <- MASS::glm.nb(Cases_Total ~ pm25_var +monthN, data=ds2)
+for(i in 1:11){
+  ds2$pm25_var <- ds2[,pm2_5.select2[i]]
+mod1[[i]] <- MASS::glm.nb(Cases_Total ~ pm25_var +monthN + day_of_week, data=ds2)
 }
 
 pm2_5_coefs <- sapply(mod1, function(X){
   coef(X)['pm25_var']
     })
 
-plot(1:13,pm2_5_coefs, type='l')
+plot(1:11,pm2_5_coefs, type='l')
 abline(h=0)
 
-mod2 <- MASS::glm.nb(Cases_Total ~ pm2_5_lag3 + pm2_5_lag4 + pm2_5_lag5 +monthN, data=ds2)
+mod2 <- MASS::glm.nb(Cases_Total ~ pm2_5_dic_lag4 + pm2_5_dic_lag5 + pm2_5_dic_lag6 +monthN +day_of_week, data=ds2)
 summary(mod2)
 ```
 
