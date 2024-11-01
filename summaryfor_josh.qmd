@@ -69,7 +69,7 @@ mod1.coef <- mod1_lin$summary.fixed[grep('basis_pm',row.names(mod1_lin$summary.f
 
 mod1.vcov <-mod1_lin$misc$lincomb.derived.covariance.matrix[grep('basis_pm',row.names(mod1_lin$summary.fixed)),grep('basis_pm',row.names(mod1_lin$summary.fixed))]
 
-pred1.pm <- crosspred(basis_pm2_5_lin, coef=mod1.coef, vcov=mod1.vcov, at=-10:40,bylag=0.2, cumul=TRUE)
+pred1.pm <- crosspred(basis_pm2_5_lin, coef=mod1.coef, vcov=mod1.vcov, at=-10:40,bylag=0.2, cumul=TRUE, model.link='log')
 
 ```
 
@@ -125,7 +125,7 @@ mod2.coef <- mod2_lin$summary.fixed[grep('basis_pm',row.names(mod1_lin$summary.f
 
 mod2.vcov <-mod2_lin$misc$lincomb.derived.covariance.matrix[grep('basis_pm',row.names(mod2_lin$summary.fixed)),grep('basis_pm',row.names(mod2_lin$summary.fixed))]
 
-pred2.pm <- crosspred(basis_pm2_5_lin, coef=mod2.coef, vcov=mod2.vcov, at=-10:40,bylag=0.2, cumul=TRUE)
+pred2.pm <- crosspred(basis_pm2_5_lin, coef=mod2.coef, vcov=mod2.vcov, at=-10:40,bylag=0.2, cumul=TRUE, model.link='log')
 
 ```
 
@@ -199,7 +199,7 @@ mod3.coef <- mod3_lin$summary.fixed[grep('basis_pm',row.names(mod3_lin$summary.f
 
 mod3.vcov <-mod3_lin$misc$lincomb.derived.covariance.matrix[grep('basis_pm',row.names(mod3_lin$summary.fixed)),grep('basis_pm',row.names(mod3_lin$summary.fixed))]
 
-pred3.pm <- crosspred(basis_pm2_5_dic_lin, coef=mod3.coef, vcov=mod3.vcov, at=-10:40,bylag=0.2, cumul=TRUE)
+pred3.pm <- crosspred(basis_pm2_5_dic_lin, coef=mod3.coef, vcov=mod3.vcov, at=-10:40,bylag=0.2, cumul=TRUE, model.link='log')
 
 ```
 
