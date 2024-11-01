@@ -107,6 +107,8 @@ ds1 <- read.csv('./Data/CONFIDENTIAL/CovidNet_AQ_Weather_08292024.csv') %>%
   filter(!is.na(Cases_Total) & !is.na(humid_lag0)) %>%
   left_join(ds0, by='date')
 
+saveRDS(ds1,'./Data/CONFIDENTIAL/lagged_data.rds')
+
  pm2_5_mat <- ds1 %>%
    select(starts_with('pm2_5_lag')) %>%
    as.matrix()
@@ -117,7 +119,6 @@ ds1 <- read.csv('./Data/CONFIDENTIAL/CovidNet_AQ_Weather_08292024.csv') %>%
  
   humid_mat <- ds1 %>%
    select(starts_with('humid_lag')) %>%
-   as.matrix()
  
  
  dow_mat <- model.matrix(~-1 + day_of_week, data=ds1) 
@@ -148,7 +149,7 @@ ds1$pm2_5_round=round(ds1$ave_pm2_5_day_1_5,1)
 
 mod2 <- inla(Cases_Total~ f(t, model='rw2', scale.model=T) + ave_pm2_5_day_1_5 + day_of_week , family='nbinomial', data=ds1)
 
-mod2 <- inla(Cases_Total~ f(t, model='rw2', scale.model=F) + pm2_5_lag1 + pm2_5_lag2 +pm2_5_lag3 +pm2_5_lag4 +pm2_5_lag5 + day_of_week , family='nbinomial', data=ds1)
+ mod2 <- inla(Cases_Total~ f(t, model='rw2', scale.model=T) + pm2_5_lag1 + pm2_5_lag2 +pm2_5_lag3 +pm2_5_lag4 +pm2_5_lag5 + day_of_week , family='nbinomial', data=ds1)
 
 coefs <- mod2$summary.fixed
 coefs.lag <- coefs[grep('lag',row.names(coefs)),'mean']
@@ -172,16 +173,23 @@ whether you adjust time using a monthly dummy or using a RW2 makes a huge effect
 ```{r}
   nlag=14
 
-  basis_pm2_5_lin <-   crossbasis(ds1$pm2_5, lag=20, argvar=list(fun="lin"),
-      arglag=list(fun="poly",degree=20))
+  basis_pm2_5_lin <-   crossbasis(ds1$pm2_5, lag=nlag, argvar=list(fun="lin"),
+      arglag=list(fun="poly",degree=4))
+  
   colnames(basis_pm2_5_lin) = paste0("basis_pm2_5.", colnames(basis_pm2_5_lin))
 
 
-mod1_lin <-   inla(Cases_Total ~ day_of_week  + basis_pm2_5_lin + f(t, model='rw2'), family='poisson', data=ds1,
+  ds1a <- ds1 %>%
+    mutate(weekdate=floor_date(date, 'week'),
+           weekN = as.numeric(difftime(weekdate, min(weekdate), units = "weeks")),
+           cal_monthN= as.numeric(as.factor(paste(year(date), month(date), '01', sep='-')))
+           )
+  
+mod1_lin <-   inla(Cases_Total ~ day_of_week  + basis_pm2_5_lin + f(t, model='rw2', scale.model=T), family='nbinomial', data=ds1a,
                       control.predictor = list(link = 1, compute = TRUE),
                    control.compute=list(return.marginals.predictor=TRUE),
                 control.fixed = list(correlation.matrix = TRUE, 
-                            prec.intercept = 1e-4, prec = 1)
+                            prec.intercept = 1e-4, prec = 1e-4)
                )
 summary(mod1_lin)
 
@@ -200,36 +208,7 @@ main="Association with an 1 SD increase in PM2.5")
 
  plot(pred1.pm, "slices", var=1, col=2, cumul=TRUE, ylab="Cumulative RR",
 main="Cumulative association with a 1-SD increase in PM2.5")
- 
- 
-## Control for calendar time instead with a month dummy
 
- ds2 <- ds1 %>%
-   mutate(cal_month= as.factor(paste(year(date), month(date), '01', sep='-')))
-
- mod2_lin <-   inla(Cases_Total ~ day_of_week  + basis_pm2_5_lin +cal_month, family='poisson', data=ds2,
-                      control.predictor = list(link = 1, compute = TRUE),
-                   control.compute=list(return.marginals.predictor=TRUE),
-                control.fixed = list(correlation.matrix = TRUE, 
-                            prec.intercept = 1e-4, prec = 1)
-               )
-#summary(mod1_lin)
-
-mod2.coef <- mod2_lin$summary.fixed[grep('basis_pm',row.names(mod2_lin$summary.fixed)),'mean']
-
-mod2.vcov <-mod2_lin$misc$lincomb.derived.covariance.matrix[grep('basis_pm',row.names(mod2_lin$summary.fixed)),grep('basis_pm',row.names(mod2_lin$summary.fixed))]
-
-pred2.pm <- crosspred(basis_pm2_5_lin, coef=mod2.coef, vcov=mod2.vcov, at=-10:40,bylag=0.2, cumul=TRUE)
-
-
-plot(pred2.pm, "overall", var=1,lag=1, col=3, ylab="logRR", ci.arg=list(density=15,lwd=2),
-main="log-RR")
-
-plot(pred2.pm, "slices", var=1, col=3, ylab="logRR", ci.arg=list(density=15,lwd=2),
-main="Association with an 1 SD increase in PM2.5")
-
- plot(pred2.pm, "slices", var=1, col=2, cumul=TRUE, ylab="Cumulative RR",
-main="Cumulative association with a 1-SD increase in PM2.5")
 ```
 
 DLNM model
@@ -915,7 +894,8 @@ ds2 <- ds1 %>%
   arrange(date) %>%
   mutate(flu_lag1=lag(Flu_Total,1),
          log_flu_lag1 =log(flu_lag1+1),
-         monthN=as.factor(lubridate::month(date)))
+         monthN=as.factor(lubridate::month(date))) %>%
+  dplyr::select(date, Cases_Total,starts_with('humid'),starts_with('pm2_5_lag0'),)
 mod1 <- list()
 
 humid.select <- c( 'humid_lag1','humid_lag2','humid_lag3','humid_lag4','humid_lag5','humid_lag6','humid_lag7','humid_lag8','humid_lag9',
@@ -957,5 +937,17 @@ abline(h=0)
 
 mod2 <- MASS::glm.nb(Cases_Total ~ pm2_5_dic_lag4 + pm2_5_dic_lag5 + pm2_5_dic_lag6 +monthN +day_of_week, data=ds2)
 summary(mod2)
+```
+
+```{r}
+ds2 <- ds1 %>%
+  mutate(std_humid = (humid - mean(humid) )/sd(humid)) %>%
+  arrange(region, date) %>%
+  group_by(date) %>%
+  mutate(  
+           std_humid_lag0 = std_humid,
+           std_humid_lag1 = lag(std_humid,1),
+           std_humid_lag2 = lag(std_humid,2),
+           )
 ```
 

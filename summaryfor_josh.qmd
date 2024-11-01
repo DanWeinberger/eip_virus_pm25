@@ -1,0 +1,280 @@
+---
+title: "josh summary"
+format: pdf
+editor: visual
+---
+
+```{r, setup}
+library(dplyr)
+library(ggplot2)
+library(scales)
+library(reshape2)
+library(rjags)
+library(stringr)
+library(tidyr)
+library(tidybayes)
+library(lubridate)
+
+library(tsModel)
+library(dlnm)
+
+library(INLA)
+library(RColorBrewer)
+
+ds1 <- readRDS('./Data/CONFIDENTIAL/lagged_data.rds')
+```
+
+## Create basis functions
+
+```{r}
+nlag=14
+
+basis_pm2_5_lin <-   crossbasis(ds1$pm2_5, lag=nlag, argvar=list(fun="lin"),
+                                arglag=list(fun="poly",degree=4))
+
+colnames(basis_pm2_5_lin) = paste0("basis_pm2_5.", colnames(basis_pm2_5_lin))
+
+
+ds1a <- ds1 %>%
+  mutate(weekdate=floor_date(date, 'week'),
+         weekN = as.numeric(difftime(weekdate, min(weekdate), units = "weeks")),
+         cal_monthN= as.numeric(as.factor(paste(year(date), month(date), '01', sep='-')))
+  )
+```
+
+## INLA model 1
+
+Day of week effect
+
+PM2.5 distributed lag basis
+
+RW2 using time index
+
+Negative binomial
+
+```{r}
+
+mod1_lin <-   inla(Cases_Total ~ day_of_week  + basis_pm2_5_lin + f(t, model='rw2', scale.model=T), family='nbinomial', data=ds1a,
+                   control.predictor = list(link = 1, compute = TRUE),
+                   control.compute=list(return.marginals.predictor=TRUE),
+                   control.fixed = list(correlation.matrix = TRUE, 
+                                        prec.intercept = 1e-4, prec = 1e-4)
+)
+```
+
+Extract coefficients
+
+```{r}
+mod1.coef <- mod1_lin$summary.fixed[grep('basis_pm',row.names(mod1_lin$summary.fixed)),'mean']
+
+mod1.vcov <-mod1_lin$misc$lincomb.derived.covariance.matrix[grep('basis_pm',row.names(mod1_lin$summary.fixed)),grep('basis_pm',row.names(mod1_lin$summary.fixed))]
+
+pred1.pm <- crosspred(basis_pm2_5_lin, coef=mod1.coef, vcov=mod1.vcov, at=-10:40,bylag=0.2, cumul=TRUE)
+
+```
+
+## Plot 
+
+Trends
+
+```{r}
+plot(pred1.pm, "overall", var=1,lag=1, col=3, ylab="RR", ci.arg=list(density=15,lwd=2),
+     main="log-RR")
+```
+
+Coefficients
+
+```{r}
+plot(pred1.pm, "slices", var=1, col=3, ylab="RR", ci.arg=list(density=15,lwd=2),
+     main="Association with an 1 SD increase in PM2.5")
+```
+
+Cumulative effect
+```{r}
+plot(pred1.pm, "slices", var=1, col=2, cumul=TRUE, ylab="Cumulative RR",
+     main="Cumulative association with a 1-SD increase in PM2.5")
+```
+
+
+## INLA model 2
+
+Same as INLA model 1, except we have a RW2 for month index (instead of day inde)
+
+Day of week effect
+
+PM2.5 distributed lag basis
+
+RW2 using time index
+
+Negative binomial
+
+```{r}
+
+mod2_lin <-   inla(Cases_Total ~ day_of_week  + basis_pm2_5_lin + f(cal_monthN, model='rw2', scale.model=T), family='nbinomial', data=ds1a,
+                   control.predictor = list(link = 1, compute = TRUE),
+                   control.compute=list(return.marginals.predictor=TRUE),
+                   control.fixed = list(correlation.matrix = TRUE, 
+                                        prec.intercept = 1e-4, prec = 1e-4)
+)
+```
+
+Extract coefficients
+
+```{r}
+mod2.coef <- mod2_lin$summary.fixed[grep('basis_pm',row.names(mod1_lin$summary.fixed)),'mean']
+
+mod2.vcov <-mod2_lin$misc$lincomb.derived.covariance.matrix[grep('basis_pm',row.names(mod2_lin$summary.fixed)),grep('basis_pm',row.names(mod2_lin$summary.fixed))]
+
+pred2.pm <- crosspred(basis_pm2_5_lin, coef=mod2.coef, vcov=mod2.vcov, at=-10:40,bylag=0.2, cumul=TRUE)
+
+```
+
+## Plot 
+
+Trends
+
+```{r}
+plot(pred2.pm, "overall", var=1,lag=1, col=3, ylab="RR", ci.arg=list(density=15,lwd=2),
+     main="log-RR")
+```
+
+Coefficients
+
+```{r}
+plot(pred2.pm, "slices", var=1, col=3, ylab="RR", ci.arg=list(density=15,lwd=2),
+     main="Association with an 1 SD increase in PM2.5")
+```
+
+Cumulative effect
+```{r}
+plot(pred2.pm, "slices", var=1, col=2, cumul=TRUE, ylab="Cumulative RR",
+     main="Cumulative association with a 1-SD increase in PM2.5")
+```
+
+
+## INLA model 3
+Same as model 1 but use dichotomous PM2.5
+
+### Create basis functions
+
+```{r}
+nlag=14
+
+basis_pm2_5_dic_lin <-   crossbasis(ds1$pm2_5_dic, lag=nlag, argvar=list(fun="lin"),
+                                arglag=list(fun="poly",degree=4))
+
+colnames(basis_pm2_5_dic_lin) = paste0("basis_pm2_5.", colnames(basis_pm2_5_dic_lin))
+
+
+ds1a <- ds1 %>%
+  mutate(weekdate=floor_date(date, 'week'),
+         weekN = as.numeric(difftime(weekdate, min(weekdate), units = "weeks")),
+         cal_monthN= as.numeric(as.factor(paste(year(date), month(date), '01', sep='-')))
+  )
+```
+
+
+Day of week effect
+
+PM2.5 distributed lag basis
+
+RW2 using time index
+
+Negative binomial
+
+```{r}
+
+mod3_lin <-   inla(Cases_Total ~ day_of_week  + basis_pm2_5_dic_lin + f(t, model='rw2', scale.model=T), family='nbinomial', data=ds1a,
+                   control.predictor = list(link = 1, compute = TRUE),
+                   control.compute=list(return.marginals.predictor=TRUE),
+                   control.fixed = list(correlation.matrix = TRUE, 
+                                        prec.intercept = 1e-4, prec = 1e-4)
+)
+```
+
+Extract coefficients
+
+```{r}
+mod3.coef <- mod3_lin$summary.fixed[grep('basis_pm',row.names(mod3_lin$summary.fixed)),'mean']
+
+mod3.vcov <-mod3_lin$misc$lincomb.derived.covariance.matrix[grep('basis_pm',row.names(mod3_lin$summary.fixed)),grep('basis_pm',row.names(mod3_lin$summary.fixed))]
+
+pred3.pm <- crosspred(basis_pm2_5_dic_lin, coef=mod3.coef, vcov=mod3.vcov, at=-10:40,bylag=0.2, cumul=TRUE)
+
+```
+
+## Plot 
+
+Trends
+
+```{r}
+plot(pred3.pm, "overall", var=1,lag=1, col=3, ylab="RR", ci.arg=list(density=15,lwd=2),
+     main="log-RR")
+```
+
+Coefficients
+
+```{r}
+plot(pred3.pm, "slices", var=1, col=3, ylab="RR", ci.arg=list(density=15,lwd=2),
+     main="Association with an 1 SD increase in PM2.5")
+```
+
+Cumulative effect
+```{r}
+plot(pred3.pm, "slices", var=1, col=2, cumul=TRUE, ylab="Cumulative RR",
+     main="Cumulative association with a 1-SD increase in PM2.5")
+```
+
+
+
+##Model 4
+
+Same as mod1 but use GAM instead of INLA
+
+```{r}
+nlag=14
+
+basis_pm2_5_lin <-   crossbasis(ds1$pm2_5, lag=nlag, argvar=list(fun="lin"),
+                                arglag=list(fun="poly",degree=4))
+
+colnames(basis_pm2_5_lin) = paste0("basis_pm2_5.", colnames(basis_pm2_5_lin))
+
+
+ds1a <- ds1 %>%
+  mutate(weekdate=floor_date(date, 'week'),
+         weekN = as.numeric(difftime(weekdate, min(weekdate), units = "weeks")),
+         cal_monthN= as.numeric(as.factor(paste(year(date), month(date), '01', sep='-')))
+  )
+mod4_lin <-   mgcv::gam(Cases_Total ~ day_of_week  + basis_pm2_5_lin + s(t, bs='ps'), family='nb', data=ds1a)
+
+```
+
+Extract coefficients
+
+```{r}
+
+pred4.pm <- crosspred(basis_pm2_5_lin, model=mod4_lin, cumul=TRUE)
+
+```
+
+## Plot 
+
+Trends
+
+```{r}
+plot(pred4.pm, "overall", var=1,lag=1, col=3, ylab="RR", ci.arg=list(density=15,lwd=2),
+     main="log-RR")
+```
+
+Coefficients
+
+```{r}
+plot(pred4.pm, "slices", var=1, col=3, ylab="RR", ci.arg=list(density=15,lwd=2),
+     main="Association with an 1 SD increase in PM2.5")
+```
+
+Cumulative effect
+```{r}
+plot(pred4.pm, "slices", var=1, col=2, cumul=TRUE, ylab="Cumulative RR",
+     main="Cumulative association with a 1-SD increase in PM2.5")
+```

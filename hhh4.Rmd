@@ -1,0 +1,147 @@
+---
+title: "hhh4"
+output: html_document
+date: "2024-10-05"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## HHH4 type model
+this is incomplete, needs testing and thought.
+```{r}
+
+model_string_hhh4 <- "
+
+model{
+
+for(i in 1:Ntimes){
+cases[i] ~ dnegbin(prob[i],r)
+prob[i]<- r/(r+mu[i])  ## likelihood 
+
+log(upsilon[i]) <- beta0 +  inprod(delta[],dow_mat[i,]) #endemic component
+log(lambda[i]) <- delta0 +  inprod(epsilon[],pm2_5_mat[i,]) +  inprod(eta[],humid_mat[i,]) #epidemic component
+
+}
+
+   mu[1] <-   upsilon[1]*offset[1] 
+
+for(i in 2:Ntimes){
+
+   mu[i] <-   upsilon[i]*offset[i] + lambda[i]*cases[i-1]
+
+}
+
+  #day of week effects
+  for(k in 1:6){
+    delta[k]~dnorm(0,1e-4)
+  }
+  
+  #prior for pm2.5 effect
+  epsilon[1] ~ dnorm(0, (1 - rho2^2) * tau.epsilon2)
+  for(m in 2:15){
+    epsilon[m] ~ dnorm(rho2 *epsilon[m-1] , tau.epsilon2)
+  }
+  
+  #prior for humidity effect
+    eta[1] ~ dnorm(0, (1 - rho3^2) * tau.eta2)
+  for(m in 2:11){
+    eta[m] ~ dnorm(rho3 *eta[m-1] , tau.eta2)
+  }
+  
+  tau.epsilon2 ~ dgamma(3, 2)  # Tight prior for tau 
+  tau.eta2 ~ dgamma(3,2)
+  
+  rho2 ~ dunif(-1, 1)       # Uniform prior for rho
+  rho3 ~ dunif(-1, 1)       # Uniform prior for rho
+
+  beta0 ~ dnorm(0, 1e-4)   # Uninformative prior for intercept
+  delta0 ~ dnorm(0, 1e-4)   # Uninformative prior for intercept
+  
+  r ~ dunif(0,250)
+
+}
+"
+```
+
+```{r}
+model_spec_hhh4<-textConnection(model_string_hhh4)
+model_jags_hhh4<-jags.model(model_spec_hhh4,
+                       inits=list(inits1,inits2, inits3),
+                       data=list('Ntimes'= nrow(ds1)  ,
+                                 'cases'= ds1$Cases_Total,
+                                 'pm2_5_mat'=pm2_5_mat,
+                                 'dow_mat'=dow_mat,
+                                 'humid_mat'=humid_mat,
+                                 'offset'= rep(1, times=nrow(ds1))
+                                 
+                       ),
+                       n.adapt=2000,
+                       n.chains=3, quiet=F)
+```
+
+```{r}
+params<-c('rho2', 'beta0','delta0','lambda','upsilon', 'epsilon','mu','delta','eta')
+
+```
+
+```{r}
+posterior_samples_hhh4<-coda.samples(model_jags_hhh4, 
+                                params, 
+                                n.iter=2000)
+```
+
+
+```{r}
+test <- gather_draws(posterior_samples_hhh4, mu[i])
+
+test %>%
+  filter(i==1) %>%
+  mutate(.chain=as.factor(.chain)) %>%
+ggplot( aes(x=.iteration, y=.value, group=.chain, color=.chain), alpha=0.2) +
+  geom_line()+
+  theme_classic()
+
+
+test <- gather_draws(posterior_samples_hhh4, upsilon[i])
+
+test %>%
+    filter(i==1) %>%
+  mutate(.chain=as.factor(.chain)) %>%
+ggplot( aes(x=.iteration, y=.value, group=.chain, color=.chain), alpha=0.2) +
+  geom_line()+
+  theme_classic()
+
+```
+
+pm2.5
+```{r}
+dl_summary <- gather_draws(posterior_samples_hhh4, epsilon[m]) %>%
+  median_hdi()
+
+ggplot(dl_summary, aes(x=m, y=.value)) +
+  geom_line()+
+  geom_ribbon(aes(x=m, ymin=.lower, ymax=.upper), alpha=0.2)+
+  theme_minimal()+
+  geom_hline(yintercept=0, lty=2)
+
+```
+
+humidity
+```{r}
+dl_summary <- gather_draws(posterior_samples_hhh4, eta[m]) %>%
+  median_hdi()
+
+ggplot(dl_summary, aes(x=m, y=.value)) +
+  geom_line()+
+  geom_ribbon(aes(x=m, ymin=.lower, ymax=.upper), alpha=0.2)+
+  theme_minimal()+
+  geom_hline(yintercept=0, lty=2)
+
+```
+
+```{r}
+
+```
+
